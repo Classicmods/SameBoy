@@ -427,6 +427,7 @@ struct shader_name {
     {"Bilinear", "Bilinear"},
     {"SmoothBilinear", "Smooth Bilinear"},
     {"LCD", "LCD Display"},
+    {"CRT", "CRT Display"},
     {"Scale2x", "Scale2x"},
     {"Scale4x", "Scale4x"},
     {"AAScale2x", "Anti-aliased Scale2x"},
@@ -721,8 +722,7 @@ joypad_axis_t get_joypad_axis(uint8_t physical_axis)
 }
 
 
-extern void set_filename(const char *new_filename, bool new_should_free);
-void run_gui(bool is_running)
+void connect_joypad(void)
 {
     if (joystick && !SDL_NumJoysticks()) {
         if (controller) {
@@ -743,10 +743,17 @@ void run_gui(bool is_running)
             joystick = SDL_JoystickOpen(0);
         }
     }
+}
+
+extern void set_filename(const char *new_filename, bool new_should_free);
+void run_gui(bool is_running)
+{
+    connect_joypad();
+    
     /* Draw the background screen */
     static SDL_Surface *converted_background = NULL;
     if (!converted_background) {
-        SDL_Surface *background = SDL_LoadBMP(executable_relative_path("background.bmp"));
+        SDL_Surface *background = SDL_LoadBMP(resource_path("background.bmp"));
         SDL_SetPaletteColors(background->format->palette, gui_palette, 0, 4);
         converted_background = SDL_ConvertSurface(background, pixel_format, 0);
         SDL_LockSurface(converted_background);

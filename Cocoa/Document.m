@@ -16,13 +16,7 @@ enum model {
     MODEL_DMG,
     MODEL_CGB,
     MODEL_AGB,
-};
-
-static const GB_model_t cocoa_to_internal_model[] =
-{
-    [MODEL_DMG] = GB_MODEL_DMG_B,
-    [MODEL_CGB] = GB_MODEL_CGB_E,
-    [MODEL_AGB] = GB_MODEL_AGB
+    MODEL_SGB,
 };
 
 @interface Document ()
@@ -60,6 +54,7 @@ static const GB_model_t cocoa_to_internal_model[] =
     enum model current_model;
     
     bool rewind;
+    bool modelsChanging;
 }
 
 @property GBAudioClient *audioClient;
@@ -157,32 +152,27 @@ static void printImage(GB_gameboy_t *gb, uint32_t *image, uint8_t height,
     return [[NSBundle mainBundle] pathForResource:name ofType:@"bin"];
 }
 
-/* Todo: Unify the 3 init functions */
-- (void) initDMG
+- (GB_model_t)internalModel
 {
-    current_model = MODEL_DMG;
-    GB_init(&gb, cocoa_to_internal_model[current_model]);
-    GB_load_boot_rom(&gb, [[self bootROMPathForName:@"dmg_boot"] UTF8String]);
-    [self initCommon];
-}
-
-- (void) initCGB
-{
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"EmulateAGB"]) {
-        current_model = MODEL_AGB;
-        GB_init(&gb, cocoa_to_internal_model[current_model]);
-        GB_load_boot_rom(&gb, [[self bootROMPathForName:@"agb_boot"] UTF8String]);
+    switch (current_model) {
+        case MODEL_DMG:
+            return (GB_model_t)[[NSUserDefaults standardUserDefaults] integerForKey:@"GBDMGModel"];
+            
+        case MODEL_NONE:
+        case MODEL_CGB:
+            return (GB_model_t)[[NSUserDefaults standardUserDefaults] integerForKey:@"GBCGBModel"];
+            
+        case MODEL_SGB:
+            return (GB_model_t)[[NSUserDefaults standardUserDefaults] integerForKey:@"GBSGBModel"];
+        
+        case MODEL_AGB:
+            return GB_MODEL_AGB;
     }
-    else {
-        current_model = MODEL_CGB;
-        GB_init(&gb, cocoa_to_internal_model[current_model]);
-        GB_load_boot_rom(&gb, [[self bootROMPathForName:@"cgb_boot"] UTF8String]);
-    }
-    [self initCommon];
 }
 
 - (void) initCommon
 {
+    GB_init(&gb, [self internalModel]);
     GB_set_user_data(&gb, (__bridge void *)(self));
     GB_set_vblank_callback(&gb, (GB_vblank_callback_t) vblank);
     GB_set_log_callback(&gb, (GB_log_callback_t) consoleLog);
@@ -194,7 +184,6 @@ static void printImage(GB_gameboy_t *gb, uint32_t *image, uint8_t height,
     GB_set_camera_update_request_callback(&gb, cameraRequestUpdate);
     GB_set_highpass_filter_mode(&gb, (GB_highpass_mode_t) [[NSUserDefaults standardUserDefaults] integerForKey:@"GBHighpassFilter"]);
     GB_set_rewind_length(&gb, [[NSUserDefaults standardUserDefaults] integerForKey:@"GBRewindLength"]);
-    [self loadROM];
 }
 
 - (void) vblank
@@ -216,7 +205,6 @@ static void printImage(GB_gameboy_t *gb, uint32_t *image, uint8_t height,
 {
     running = true;
     GB_set_pixels_output(&gb, self.view.pixels);
-    self.view.gb = &gb;
     GB_set_sample_rate(&gb, 96000);
     self.audioClient = [[GBAudioClient alloc] initWithRendererBlock:^(UInt32 sampleRate, UInt32 nFrames, GB_sample_t *buffer) {
         GB_apu_copy_buffer(&gb, buffer, nFrames);
@@ -266,28 +254,50 @@ static void printImage(GB_gameboy_t *gb, uint32_t *image, uint8_t height,
     GB_debugger_set_disabled(&gb, false);
 }
 
+- (void) loadBootROM
+{
+    static NSString * const boot_names[] = {@"dmg_boot", @"cgb_boot", @"agb_boot", @"sgb_boot"};
+    if ([self internalModel] == GB_MODEL_SGB2) {
+        GB_load_boot_rom(&gb, [[self bootROMPathForName:@"sgb2_boot"] UTF8String]);
+    }
+    else {
+        GB_load_boot_rom(&gb, [[self bootROMPathForName:boot_names[current_model - 1]] UTF8String]);
+    }
+}
+
 - (IBAction)reset:(id)sender
 {
     [self stop];
-
+    size_t old_width = GB_get_screen_width(&gb);
+    
     if ([sender tag] != MODEL_NONE) {
         current_model = (enum model)[sender tag];
     }
     
-    static NSString * const boot_names[] = {@"dmg_boot", @"cgb_boot", @"agb_boot"};
-    GB_load_boot_rom(&gb, [[self bootROMPathForName:boot_names[current_model - 1]] UTF8String]);
-
-    if ([sender tag] == MODEL_NONE) {
+    [self loadBootROM];
+    
+    if (!modelsChanging && [sender tag] == MODEL_NONE) {
         GB_reset(&gb);
     }
     else {
-        GB_switch_model_and_reset(&gb, cocoa_to_internal_model[current_model]);
+        GB_switch_model_and_reset(&gb, [self internalModel]);
     }
-
+    
+    if (old_width != GB_get_screen_width(&gb)) {
+        [self.view screenSizeChanged];
+    }
+    
+    self.mainWindow.contentMinSize = NSMakeSize(GB_get_screen_width(&gb), GB_get_screen_height(&gb));
+    if (self.mainWindow.contentView.bounds.size.width < GB_get_screen_width(&gb) ||
+        self.mainWindow.contentView.bounds.size.width < GB_get_screen_height(&gb)) {
+        [self.mainWindow zoom:nil];
+    }
+    
     if ([sender tag] != 0) {
         /* User explictly selected a model, save the preference */
         [[NSUserDefaults standardUserDefaults] setBool:current_model == MODEL_DMG forKey:@"EmulateDMG"];
-        [[NSUserDefaults standardUserDefaults] setBool:current_model== MODEL_AGB forKey:@"EmulateAGB"];
+        [[NSUserDefaults standardUserDefaults] setBool:current_model == MODEL_SGB forKey:@"EmulateSGB"];
+        [[NSUserDefaults standardUserDefaults] setBool:current_model == MODEL_AGB forKey:@"EmulateAGB"];
     }
     
     /* Reload the ROM, SAV and SYM files */
@@ -379,14 +389,36 @@ static void printImage(GB_gameboy_t *gb, uint32_t *image, uint8_t height,
                                                  name:@"GBRewindLengthChanged"
                                                object:nil];
     
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(dmgModelChanged)
+                                                 name:@"GBDMGModelChanged"
+                                               object:nil];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(sgbModelChanged)
+                                                 name:@"GBSGBModelChanged"
+                                               object:nil];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(cgbModelChanged)
+                                                 name:@"GBCGBModelChanged"
+                                               object:nil];
+    
     if ([[NSUserDefaults standardUserDefaults] boolForKey:@"EmulateDMG"]) {
-        [self initDMG];
+        current_model = MODEL_DMG;
+    }
+    else if ([[NSUserDefaults standardUserDefaults] boolForKey:@"EmulateSGB"]) {
+        current_model = MODEL_SGB;
     }
     else {
-        [self initCGB];
+        current_model = [[NSUserDefaults standardUserDefaults] boolForKey:@"EmulateAGB"]? MODEL_AGB : MODEL_CGB;
     }
     
-    [self start];
+    [self initCommon];
+    self.view.gb = &gb;
+    [self.view screenSizeChanged];
+    [self loadROM];
+    [self reset:nil];
 
 }
 
@@ -551,21 +583,24 @@ static void printImage(GB_gameboy_t *gb, uint32_t *image, uint8_t height,
     if (fullScreen) {
         return newFrame;
     }
+    size_t width  = GB_get_screen_width(&gb),
+           height = GB_get_screen_height(&gb);
+    
     NSRect rect = window.contentView.frame;
 
     int titlebarSize = window.contentView.superview.frame.size.height - rect.size.height;
-    int step = 160 / [[window screen] backingScaleFactor];
+    int step = width / [[window screen] backingScaleFactor];
 
     rect.size.width = floor(rect.size.width / step) * step + step;
-    rect.size.height = rect.size.width / 10 * 9 + titlebarSize;
+    rect.size.height = rect.size.width * height / width + titlebarSize;
 
     if (rect.size.width > newFrame.size.width) {
-        rect.size.width = 160;
-        rect.size.height = 144 + titlebarSize;
+        rect.size.width = width;
+        rect.size.height = height + titlebarSize;
     }
     else if (rect.size.height > newFrame.size.height) {
-        rect.size.width = 160;
-        rect.size.height = 144 + titlebarSize;
+        rect.size.width = width;
+        rect.size.height = height + titlebarSize;
     }
 
     rect.origin = window.frame.origin;
@@ -1417,6 +1452,33 @@ static void printImage(GB_gameboy_t *gb, uint32_t *image, uint8_t height,
             GB_set_rewind_length(&gb, [[NSUserDefaults standardUserDefaults] integerForKey:@"GBRewindLength"]);
         }
     }];
+}
+
+- (void)dmgModelChanged
+{
+    modelsChanging = true;
+    if (current_model == MODEL_DMG) {
+        [self reset:nil];
+    }
+    modelsChanging = false;
+}
+
+- (void)sgbModelChanged
+{
+    modelsChanging = true;
+    if (current_model == MODEL_SGB) {
+        [self reset:nil];
+    }
+    modelsChanging = false;
+}
+
+- (void)cgbModelChanged
+{
+    modelsChanging = true;
+    if (current_model == MODEL_CGB) {
+        [self reset:nil];
+    }
+    modelsChanging = false;
 }
 
 - (void)setFileURL:(NSURL *)fileURL

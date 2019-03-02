@@ -33,9 +33,17 @@ BIN := build/bin
 OBJ := build/obj
 BOOTROMS_DIR ?= $(BIN)/BootROMs
 
+ifdef DATA_DIR
+CFLAGS += -DDATA_DIR="\"$(DATA_DIR)\""
+endif
+
 # Set tools
 
+# Use clang if it's available.
+ifneq (, $(shell which clang))
 CC := clang
+endif
+
 ifeq ($(PLATFORM),windows32)
 # To force use of the Unix version instead of the Windows version
 MKDIR := $(shell which mkdir)
@@ -51,7 +59,7 @@ endif
 
 # Set compilation and linkage flags based on target, platform and configuration
 
-CFLAGS += -Werror -Wall -std=gnu11 -D_GNU_SOURCE -DVERSION="$(VERSION)" -I. -D_USE_MATH_DEFINES
+CFLAGS += -Werror -Wall -Wno-unknown-warning-option -Wno-multichar -Wno-int-in-bool-context -std=gnu11 -D_GNU_SOURCE -DVERSION="$(VERSION)" -I. -D_USE_MATH_DEFINES
 SDL_LDFLAGS := -lSDL2 -lGL
 ifeq ($(PLATFORM),windows32)
 CFLAGS += -IWindows
@@ -98,9 +106,9 @@ endif
 
 cocoa: $(BIN)/SameBoy.app
 quicklook: $(BIN)/SameBoy.qlgenerator
-sdl: $(SDL_TARGET) $(BIN)/SDL/dmg_boot.bin $(BIN)/SDL/cgb_boot.bin $(BIN)/SDL/agb_boot.bin $(BIN)/SDL/LICENSE $(BIN)/SDL/registers.sym $(BIN)/SDL/background.bmp $(BIN)/SDL/Shaders
-bootroms: $(BIN)/BootROMs/agb_boot.bin $(BIN)/BootROMs/cgb_boot.bin $(BIN)/BootROMs/dmg_boot.bin
-tester: $(TESTER_TARGET) $(BIN)/tester/dmg_boot.bin $(BIN)/tester/cgb_boot.bin $(BIN)/tester/agb_boot.bin
+sdl: $(SDL_TARGET) $(BIN)/SDL/dmg_boot.bin $(BIN)/SDL/cgb_boot.bin $(BIN)/SDL/agb_boot.bin $(BIN)/SDL/sgb_boot.bin $(BIN)/SDL/sgb2_boot.bin $(BIN)/SDL/LICENSE $(BIN)/SDL/registers.sym $(BIN)/SDL/background.bmp $(BIN)/SDL/Shaders
+bootroms: $(BIN)/BootROMs/agb_boot.bin $(BIN)/BootROMs/cgb_boot.bin $(BIN)/BootROMs/dmg_boot.bin $(BIN)/BootROMs/sgb_boot.bin $(BIN)/BootROMs/sgb2_boot.bin
+tester: $(TESTER_TARGET) $(BIN)/tester/dmg_boot.bin $(BIN)/tester/cgb_boot.bin $(BIN)/tester/agb_boot.bin $(BIN)/tester/sgb_boot.bin $(BIN)/tester/sgb2_boot.bin
 all: cocoa sdl tester libretro
 
 # Get a list of our source files and their respective object file targets
@@ -165,18 +173,20 @@ $(OBJ)/%.m.o: %.m
 # Cocoa Port
 
 $(BIN)/SameBoy.app: $(BIN)/SameBoy.app/Contents/MacOS/SameBoy \
-                    $(shell ls Cocoa/*.icns) \
+                    $(shell ls Cocoa/*.icns Cocoa/*.png) \
                     Cocoa/License.html \
                     Cocoa/Info.plist \
                     Misc/registers.sym \
                     $(BIN)/SameBoy.app/Contents/Resources/dmg_boot.bin \
                     $(BIN)/SameBoy.app/Contents/Resources/cgb_boot.bin \
                     $(BIN)/SameBoy.app/Contents/Resources/agb_boot.bin \
+                    $(BIN)/SameBoy.app/Contents/Resources/sgb_boot.bin \
+                    $(BIN)/SameBoy.app/Contents/Resources/sgb2_boot.bin \
                     $(patsubst %.xib,%.nib,$(addprefix $(BIN)/SameBoy.app/Contents/Resources/Base.lproj/,$(shell cd Cocoa;ls *.xib))) \
                     $(BIN)/SameBoy.qlgenerator \
                     Shaders
 	$(MKDIR) -p $(BIN)/SameBoy.app/Contents/Resources
-	cp Cocoa/*.icns Misc/registers.sym $(BIN)/SameBoy.app/Contents/Resources/
+	cp Cocoa/*.icns Cocoa/*.png Misc/registers.sym $(BIN)/SameBoy.app/Contents/Resources/
 	sed s/@VERSION/$(VERSION)/ < Cocoa/Info.plist > $(BIN)/SameBoy.app/Contents/Info.plist
 	cp Cocoa/License.html $(BIN)/SameBoy.app/Contents/Resources/Credits.html
 	$(MKDIR) -p $(BIN)/SameBoy.app/Contents/Resources/Shaders
@@ -299,7 +309,7 @@ $(BIN)/BootROMs/%.bin: BootROMs/%.asm
 	-@$(MKDIR) -p $(dir $@)
 	cd BootROMs && rgbasm -o ../$@.tmp ../$<
 	rgblink -o $@.tmp2 $@.tmp
-	head -c $(if $(findstring dmg,$@), 256, 2304) $@.tmp2 > $@
+	head -c $(if $(findstring dmg,$@)$(findstring sgb,$@), 256, 2304) $@.tmp2 > $@
 	@rm $@.tmp $@.tmp2
 
 # Libretro Core (uses its own build system)

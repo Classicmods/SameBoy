@@ -193,11 +193,11 @@ static uint8_t read_high_memory(GB_gameboy_t *gb, uint16_t addr)
     }
     
     if (addr < 0xFE00) {
-        return gb->ram[addr & 0x0FFF];
+        return read_banked_ram(gb, addr);
     }
 
     if (addr < 0xFF00) {
-        if (gb->oam_write_blocked) {
+        if (gb->oam_write_blocked && !GB_is_cgb(gb)) {
             GB_trigger_oam_bug_read(gb, addr);
             return 0xff;
         }
@@ -271,6 +271,9 @@ static uint8_t read_high_memory(GB_gameboy_t *gb, uint16_t addr)
                 return gb->extra_oam[addr - 0xfea0];
                 
             case GB_MODEL_DMG_B:
+            case GB_MODEL_SGB_NTSC:
+            case GB_MODEL_SGB_PAL:
+            case GB_MODEL_SGB2:
                 ;
         }
     }
@@ -354,6 +357,9 @@ static uint8_t read_high_memory(GB_gameboy_t *gb, uint16_t addr)
                 if (!gb->cgb_mode && gb->boot_rom_finished) {
                     return 0xFF;
                 }
+                if (gb->cgb_palettes_blocked) {
+                    return 0xFF;
+                }
                 uint8_t index_reg = (addr & 0xFF) - 1;
                 return ((addr & 0xFF) == GB_IO_BGPD?
                        gb->background_palettes_data :
@@ -409,7 +415,7 @@ static GB_read_function_t * const read_map[] =
     read_vram,        read_vram,                                    /* 8XXX, 9XXX */
     read_mbc_ram,     read_mbc_ram,                                 /* AXXX, BXXX */
     read_ram,         read_banked_ram,                              /* CXXX, DXXX */
-    read_high_memory, read_high_memory,                             /* EXXX FXXX */
+    read_ram,         read_high_memory,                             /* EXXX FXXX */
 };
 
 uint8_t GB_read_memory(GB_gameboy_t *gb, uint16_t addr)
@@ -512,8 +518,8 @@ static void write_mbc_ram(GB_gameboy_t *gb, uint16_t addr, uint8_t value)
     if (!gb->mbc_ram_enable || !gb->mbc_ram_size) return;
 
     if (gb->cartridge_type->has_rtc && gb->mbc_ram_bank >= 8 && gb->mbc_ram_bank <= 0xC) {
-        /* RTC read */
-        gb->rtc_latched.data[gb->mbc_ram_bank - 8] = gb->rtc_real.data[gb->mbc_ram_bank - 8] = value; /* Todo: does it really write both? */
+        gb->rtc_latched.data[gb->mbc_ram_bank - 8] = gb->rtc_real.data[gb->mbc_ram_bank - 8] = value;
+        return;
     }
 
     if (!gb->mbc_ram) {
@@ -537,7 +543,7 @@ static void write_high_memory(GB_gameboy_t *gb, uint16_t addr, uint8_t value)
 {
     if (addr < 0xFE00) {
         GB_log(gb, "Wrote %02x to %04x (RAM Mirror)\n", value, addr);
-        gb->ram[addr & 0x0FFF] = value;
+        write_banked_ram(gb, addr, value);
         return;
     }
 
@@ -575,6 +581,9 @@ static void write_high_memory(GB_gameboy_t *gb, uint16_t addr, uint8_t value)
                     gb->extra_oam[addr - 0xfea0] = value;
                     break;
                 case GB_MODEL_DMG_B:
+                case GB_MODEL_SGB_NTSC:
+                case GB_MODEL_SGB_PAL:
+                case GB_MODEL_SGB2:
                 case GB_MODEL_CGB_E:
                 case GB_MODEL_AGB:
                     break;
@@ -724,8 +733,8 @@ static void write_high_memory(GB_gameboy_t *gb, uint16_t addr, uint8_t value)
                 return;
 
             case GB_IO_JOYP:
-                gb->io_registers[GB_IO_JOYP] &= 0x0F;
-                gb->io_registers[GB_IO_JOYP] |= value & 0xF0;
+                GB_sgb_write(gb, value);
+                gb->io_registers[GB_IO_JOYP] = value & 0xF0;
                 GB_update_joyp(gb);
                 return;
 
@@ -783,7 +792,15 @@ static void write_high_memory(GB_gameboy_t *gb, uint16_t addr, uint8_t value)
                        is required. */
                     return;
                 }
+                
                 uint8_t index_reg = (addr & 0xFF) - 1;
+                if (gb->cgb_palettes_blocked) {
+                    if (gb->io_registers[index_reg] & 0x80) {
+                        gb->io_registers[index_reg]++;
+                        gb->io_registers[index_reg] |= 0x80;
+                    }
+                    return;
+                }
                 ((addr & 0xFF) == GB_IO_BGPD?
                  gb->background_palettes_data :
                  gb->sprite_palettes_data)[gb->io_registers[index_reg] & 0x3F] = value;
@@ -907,7 +924,7 @@ static GB_write_function_t * const write_map[] =
     write_vram,        write_vram,                             /* 8XXX, 9XXX */
     write_mbc_ram,     write_mbc_ram,                          /* AXXX, BXXX */
     write_ram,         write_banked_ram,                       /* CXXX, DXXX */
-    write_high_memory, write_high_memory,                      /* EXXX FXXX */
+    write_ram,         write_high_memory,                     /* EXXX FXXX */
 };
 
 void GB_write_memory(GB_gameboy_t *gb, uint16_t addr, uint8_t value)

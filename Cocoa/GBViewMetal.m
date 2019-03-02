@@ -1,14 +1,5 @@
 #import "GBViewMetal.h"
 
-#define WIDTH 160
-#define HEIGHT 144
-#define PITCH (160 * 4)
-
-static const MTLRegion region = {
-    {0, 0, 0},         // MTLOrigin
-    {WIDTH, HEIGHT, 1} // MTLSize
-};
-
 static const vector_float2 rect[] =
 {
     {-1, -1},
@@ -37,21 +28,28 @@ static const vector_float2 rect[] =
     return false;
 }
 
-- (void)createInternalView
+- (void) allocateTextures
 {
-    MTKView *view = [[MTKView alloc] initWithFrame:self.frame device:(device = MTLCreateSystemDefaultDevice())];
-    view.delegate = self;
-    self.internalView = view;
+    if (!device) return;
     
     MTLTextureDescriptor *texture_descriptor = [[MTLTextureDescriptor alloc] init];
     
     texture_descriptor.pixelFormat = MTLPixelFormatRGBA8Unorm;
     
-    texture_descriptor.width = WIDTH;
-    texture_descriptor.height = HEIGHT;
+    texture_descriptor.width = GB_get_screen_width(self.gb);
+    texture_descriptor.height = GB_get_screen_height(self.gb);
     
     texture = [device newTextureWithDescriptor:texture_descriptor];
     previous_texture = [device newTextureWithDescriptor:texture_descriptor];
+
+}
+
+- (void)createInternalView
+{
+    MTKView *view = [[MTKView alloc] initWithFrame:self.frame device:(device = MTLCreateSystemDefaultDevice())];
+    view.delegate = self;
+    self.internalView = view;
+    view.paused = YES;
     
     vertices = [device newBufferWithBytes:rect
                                    length:sizeof(rect)
@@ -125,19 +123,33 @@ static const vector_float2 rect[] =
 - (void)mtkView:(nonnull MTKView *)view drawableSizeWillChange:(CGSize)size
 {
     output_resolution = (vector_float2){size.width, size.height};
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [(MTKView *)self.internalView draw];
+    });
 }
 
 - (void)drawInMTKView:(nonnull MTKView *)view
 {
+    if (!(view.window.occlusionState & NSWindowOcclusionStateVisible)) return;
+    if (texture.width  != GB_get_screen_width(self.gb) ||
+        texture.height != GB_get_screen_height(self.gb)) {
+        [self allocateTextures];
+    }
+    
+    MTLRegion region = {
+        {0, 0, 0},         // MTLOrigin
+        {texture.width, texture.height, 1} // MTLSize
+    };
+
     [texture replaceRegion:region
                mipmapLevel:0
                  withBytes:[self currentBuffer]
-               bytesPerRow:PITCH];
+               bytesPerRow:texture.width * 4];
     if ([self shouldBlendFrameWithPrevious]) {
         [previous_texture replaceRegion:region
                             mipmapLevel:0
                               withBytes:[self previousBuffer]
-                            bytesPerRow:PITCH];
+                            bytesPerRow:texture.width * 4];
     }
     
     MTLRenderPassDescriptor *render_pass_descriptor = view.currentRenderPassDescriptor;
@@ -188,4 +200,13 @@ static const vector_float2 rect[] =
     
     [command_buffer commit];
 }
+
+- (void)flip
+{
+    [super flip];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [(MTKView *)self.internalView draw];
+    });
+}
+
 @end

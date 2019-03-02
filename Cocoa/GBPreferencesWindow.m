@@ -17,6 +17,9 @@
     NSPopUpButton *_rewindPopupButton;
     NSButton *_aspectRatioCheckbox;
     NSEventModifierFlags previousModifiers;
+    
+    NSPopUpButton *_dmgPopupButton, *_sgbPopupButton, *_cgbPopupButton;
+    NSPopUpButton *_preferredJoypadButton;
 }
 
 + (NSArray *)filterList
@@ -29,6 +32,7 @@
                     @"Bilinear",
                     @"SmoothBilinear",
                     @"LCD",
+                    @"CRT",
                     @"Scale2x",
                     @"Scale4x",
                     @"AAScale2x",
@@ -100,7 +104,10 @@
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView
 {
-    return GBButtonCount;
+    if (self.playerListButton.selectedTag == 0) {
+        return GBButtonCount;
+    }
+    return GBGameBoyButtonCount;
 }
 
 - (id)tableView:(NSTableView *)tableView objectValueForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row
@@ -112,17 +119,23 @@
     if (is_button_being_modified && button_being_modified == row) {
         return @"Select a new key...";
     }
+    
+    NSNumber *key = [[NSUserDefaults standardUserDefaults] valueForKey:button_to_preference_name(row, self.playerListButton.selectedTag)];
+    if (key) {
+        return [NSString displayStringForKeyCode: [key unsignedIntegerValue]];
+    }
 
-    return [NSString displayStringForKeyCode:[[NSUserDefaults standardUserDefaults] integerForKey:
-                                                button_to_preference_name(row)]];
+    return @"";
 }
 
 - (BOOL)tableView:(NSTableView *)tableView shouldEditTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row
 {
+
     dispatch_async(dispatch_get_main_queue(), ^{
         is_button_being_modified = true;
         button_being_modified = row;
         tableView.enabled = NO;
+        self.playerListButton.enabled = NO;
         [tableView reloadData];
         [self makeFirstResponder:self];
     });
@@ -141,8 +154,9 @@
     is_button_being_modified = false;
 
     [[NSUserDefaults standardUserDefaults] setInteger:theEvent.keyCode
-                                              forKey:button_to_preference_name(button_being_modified)];
+                                              forKey:button_to_preference_name(button_being_modified, self.playerListButton.selectedTag)];
     self.controlsTableView.enabled = YES;
+    self.playerListButton.enabled = YES;
     [self.controlsTableView reloadData];
     [self makeFirstResponder:self.controlsTableView];
 }
@@ -251,6 +265,7 @@
     
     all_mappings[joystick_name] = mapping;
     [[NSUserDefaults standardUserDefaults] setObject:all_mappings forKey:@"GBJoypadMappings"];
+    [self refreshJoypadMenu:nil];
     [self advanceConfigurationStateMachine];
 }
 
@@ -361,4 +376,111 @@
     [self updateBootROMFolderButton];
 }
 
+- (void)setDmgPopupButton:(NSPopUpButton *)dmgPopupButton
+{
+    _dmgPopupButton = dmgPopupButton;
+    [_dmgPopupButton selectItemWithTag:[[NSUserDefaults standardUserDefaults] integerForKey:@"GBDMGModel"]];
+}
+
+- (NSPopUpButton *)dmgPopupButton
+{
+    return _dmgPopupButton;
+}
+
+- (void)setSgbPopupButton:(NSPopUpButton *)sgbPopupButton
+{
+    _sgbPopupButton = sgbPopupButton;
+    [_sgbPopupButton selectItemWithTag:[[NSUserDefaults standardUserDefaults] integerForKey:@"GBSGBModel"]];
+}
+
+- (NSPopUpButton *)sgbPopupButton
+{
+    return _sgbPopupButton;
+}
+
+- (void)setCgbPopupButton:(NSPopUpButton *)cgbPopupButton
+{
+    _cgbPopupButton = cgbPopupButton;
+    [_cgbPopupButton selectItemWithTag:[[NSUserDefaults standardUserDefaults] integerForKey:@"GBCGBModel"]];
+}
+
+- (NSPopUpButton *)cgbPopupButton
+{
+    return _cgbPopupButton;
+}
+
+- (IBAction)dmgModelChanged:(id)sender
+{
+    [[NSUserDefaults standardUserDefaults] setObject:@([sender selectedTag])
+                                              forKey:@"GBDMGModel"];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"GBDMGModelChanged" object:nil];
+
+}
+
+- (IBAction)sgbModelChanged:(id)sender
+{
+    [[NSUserDefaults standardUserDefaults] setObject:@([sender selectedTag])
+                                              forKey:@"GBSGBModel"];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"GBSGBModelChanged" object:nil];
+}
+
+- (IBAction)cgbModelChanged:(id)sender
+{
+    [[NSUserDefaults standardUserDefaults] setObject:@([sender selectedTag])
+                                              forKey:@"GBCGBModel"];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"GBCGBModelChanged" object:nil];
+}
+
+- (IBAction)reloadButtonsData:(id)sender
+{
+    [self.controlsTableView reloadData];
+}
+
+- (void)setPreferredJoypadButton:(NSPopUpButton *)preferredJoypadButton
+{
+    _preferredJoypadButton = preferredJoypadButton;
+    [self refreshJoypadMenu:nil];
+}
+
+- (NSPopUpButton *)preferredJoypadButton
+{
+    return _preferredJoypadButton;
+}
+
+- (IBAction)refreshJoypadMenu:(id)sender
+{
+    NSArray *joypads = [[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"GBJoypadMappings"] allKeys];
+    for (NSString *joypad in joypads) {
+        if ([self.preferredJoypadButton indexOfItemWithTitle:joypad] == -1) {
+            [self.preferredJoypadButton addItemWithTitle:joypad];
+        }
+    }
+    
+    NSString *player_string = [NSString stringWithFormat: @"%ld", (long)self.playerListButton.selectedTag];
+    NSString *selected_joypad = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"GBDefaultJoypads"][player_string];
+    if (selected_joypad && [self.preferredJoypadButton indexOfItemWithTitle:selected_joypad] != -1) {
+        [self.preferredJoypadButton selectItemWithTitle:selected_joypad];
+    }
+    else {
+        [self.preferredJoypadButton selectItemWithTitle:@"None"];
+    }
+    [self.controlsTableView reloadData];
+}
+
+- (IBAction)changeDefaultJoypad:(id)sender
+{
+    NSMutableDictionary *default_joypads = [[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"GBDefaultJoypads"] mutableCopy];
+    if (!default_joypads) {
+        default_joypads = [[NSMutableDictionary alloc] init];
+    }
+
+    NSString *player_string = [NSString stringWithFormat: @"%ld", self.playerListButton.selectedTag];
+    if ([[sender titleOfSelectedItem] isEqualToString:@"None"]) {
+        [default_joypads removeObjectForKey:player_string];
+    }
+    else {
+        default_joypads[player_string] = [sender titleOfSelectedItem];
+    }
+    [[NSUserDefaults standardUserDefaults] setObject:default_joypads forKey:@"GBDefaultJoypads"];
+}
 @end

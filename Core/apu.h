@@ -8,7 +8,13 @@
 
 #ifdef GB_INTERNAL
 /* Speed = 1 / Length (in seconds) */
-#define DAC_DECAY_SPEED 500.0
+/* Todo: Measure these  and find the actual curve shapes.
+   They are known to be incorrect (Some analog test ROM sound different),
+   but are good enough approximations to fix Cannon Fodder's terrible audio.
+   It also varies by model. */
+#define DAC_DECAY_SPEED 50000
+#define DAC_ATTACK_SPEED 1000
+
 
 /* Divides nicely and never overflows with 4 channels and 8 (1-8) volume levels */
 #ifdef WIIU
@@ -69,7 +75,9 @@ typedef struct
         uint16_t pulse_length; // Reloaded from NRX1 (xorred), in 256Hz DIV ticks
         uint8_t current_volume; // Reloaded from NRX2
         uint8_t volume_countdown; // Reloaded from NRX2
-        uint8_t current_sample_index;
+        uint8_t current_sample_index; /* For save state compatibility,
+                                         highest bit is reused (See NR14/NR24's
+                                         write code)*/
         
         uint16_t sample_countdown; // in APU ticks (Reloaded from sample_length, xorred $7FF)
         uint16_t sample_length; // From NRX3, NRX4, in APU ticks
@@ -132,6 +140,7 @@ typedef struct {
     volatile bool lock;
     
     double sample_cycles; // In 8 MHz units
+    double cycles_per_sample;
     
     // Samples are NOT normalized to MAX_CH_AMP * 4 at this stage!
     unsigned cycles_since_render;
@@ -156,6 +165,7 @@ uint8_t GB_apu_read(GB_gameboy_t *gb, uint8_t reg);
 void GB_apu_div_event(GB_gameboy_t *gb);
 void GB_apu_init(GB_gameboy_t *gb);
 void GB_apu_run(GB_gameboy_t *gb);
+void GB_apu_update_cycles_per_sample(GB_gameboy_t *gb);
 #endif
 
 #endif /* apu_h */

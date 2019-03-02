@@ -21,9 +21,28 @@ static void refresh_channel(GB_gameboy_t *gb, unsigned index, unsigned cycles_of
     gb->apu_output.last_update[index] = gb->apu_output.cycles_since_render + cycles_offset;
 }
 
+static bool is_DAC_enabled(GB_gameboy_t *gb, unsigned index)
+{
+    switch (index) {
+        case GB_SQUARE_1:
+            return gb->io_registers[GB_IO_NR12] & 0xF8;
+            
+        case GB_SQUARE_2:
+            return gb->io_registers[GB_IO_NR22] & 0xF8;
+            
+        case GB_WAVE:
+            return gb->apu.wave_channel.enable;
+            
+        case GB_NOISE:
+            return gb->io_registers[GB_IO_NR42] & 0xF8;
+    }
+    
+    return 0;
+}
+
 static void update_sample(GB_gameboy_t *gb, unsigned index, int8_t value, unsigned cycles_offset)
 {
-    if (!gb->apu.is_active[index]) {
+    if (!is_DAC_enabled(gb, index)) {
         value = gb->apu.samples[index];
     }
     else {
@@ -50,15 +69,26 @@ static void update_sample(GB_gameboy_t *gb, unsigned index, int8_t value, unsign
 static void render(GB_gameboy_t *gb, bool no_downsampling, GB_sample_t *dest)
 {
     GB_sample_t output = {0,0};
+    #pragma unroll
     for (unsigned i = GB_N_CHANNELS; i--;) {
         double multiplier = CH_STEP;
-        if (!gb->apu.is_active[i]) {
+        if (!is_DAC_enabled(gb, i)) {
             gb->apu_output.dac_discharge[i] -= ((double) DAC_DECAY_SPEED) / gb->apu_output.sample_rate;
             if (gb->apu_output.dac_discharge[i] < 0) {
                 multiplier = 0;
+                gb->apu_output.dac_discharge[i] = 0;
             }
             else {
-                multiplier *= pow(0.05, 1 - gb->apu_output.dac_discharge[i]) * (gb->apu_output.dac_discharge[i]);
+                multiplier *= gb->apu_output.dac_discharge[i];
+            }
+        }
+        else {
+            gb->apu_output.dac_discharge[i] += ((double) DAC_ATTACK_SPEED) / gb->apu_output.sample_rate;
+            if (gb->apu_output.dac_discharge[i] > 1) {
+                gb->apu_output.dac_discharge[i] = 1;
+            }
+            else {
+                multiplier *= gb->apu_output.dac_discharge[i];
             }
         }
 
@@ -96,6 +126,7 @@ static void render(GB_gameboy_t *gb, bool no_downsampling, GB_sample_t *dest)
             unsigned mask = gb->io_registers[GB_IO_NR51];
             unsigned left_volume = 0;
             unsigned right_volume = 0;
+            #pragma unroll
             for (unsigned i = GB_N_CHANNELS; i--;) {
                 if (gb->apu.is_active[i]) {
                     if (mask & 1) {
@@ -143,6 +174,8 @@ static uint16_t new_sweep_sample_legnth(GB_gameboy_t *gb)
 
 static void update_square_sample(GB_gameboy_t *gb, unsigned index)
 {
+    if (gb->apu.square_channels[index].current_sample_index & 0x80) return;
+    
     uint8_t duty = gb->io_registers[index == GB_SQUARE_1? GB_IO_NR11 :GB_IO_NR21] >> 6;
     update_sample(gb, index,
                   duties[gb->apu.square_channels[index].current_sample_index + duty * 8]?
@@ -243,7 +276,7 @@ void GB_apu_div_event(GB_gameboy_t *gb)
             }
         }
         
-        if (gb->apu.is_active[GB_NOISE] && gb->apu.noise_channel.volume_countdown && (gb->io_registers[GB_IO_NR42] & 7)) {
+        if (gb->apu.is_active[GB_NOISE] && gb->apu.noise_channel.volume_countdown == 0 && (gb->io_registers[GB_IO_NR42] & 7)) {
             tick_noise_envelope(gb);
         }
     }
@@ -341,6 +374,7 @@ void GB_apu_run(GB_gameboy_t *gb)
         }
     }
     
+    #pragma unroll
     for (unsigned i = GB_SQUARE_2 + 1; i--;) {
         if (gb->apu.is_active[i]) {
             uint8_t cycles_left = cycles;
@@ -423,10 +457,9 @@ void GB_apu_run(GB_gameboy_t *gb)
     
     if (gb->apu_output.sample_rate) {
         gb->apu_output.cycles_since_render += cycles;
-        double cycles_per_sample = 2 * GB_get_clock_rate(gb) / (double)gb->apu_output.sample_rate; /* 2 * because we use 8MHz units */
         
-        if (gb->apu_output.sample_cycles > cycles_per_sample) {
-            gb->apu_output.sample_cycles -= cycles_per_sample;
+        if (gb->apu_output.sample_cycles > gb->apu_output.cycles_per_sample) {
+            gb->apu_output.sample_cycles -= gb->apu_output.cycles_per_sample;
             render(gb, false, NULL);
         }
     }
@@ -434,6 +467,9 @@ void GB_apu_run(GB_gameboy_t *gb)
 
 void GB_apu_copy_buffer(GB_gameboy_t *gb, GB_sample_t *dest, size_t count)
 {
+    if (gb->sgb) {
+        if (GB_sgb_render_jingle(gb, dest, count)) return;
+    }
     gb->apu_output.copy_in_progress = true;
 
     if (!gb->apu_output.stream_started) {
@@ -617,8 +653,8 @@ void GB_apu_write(GB_gameboy_t *gb, uint8_t reg, uint8_t value)
                 gb->apu.square_channels[index].volume_countdown = 0;
             }
             if ((value & 0xF8) == 0) {
-                /* According to Blargg's test ROM this should disable the channel instantly
-                 TODO: verify how "instant" the change is using PCM12 */
+                /* This disables the DAC */
+                gb->io_registers[reg] = value;
                 gb->apu.is_active[index] = false;
                 update_sample(gb, index, 0, 0);
             }
@@ -672,6 +708,8 @@ void GB_apu_write(GB_gameboy_t *gb, uint8_t reg, uint8_t value)
                 if ((gb->io_registers[index == GB_SQUARE_1 ? GB_IO_NR12 : GB_IO_NR22] & 0xF8) != 0 && !gb->apu.is_active[index]) {
                     gb->apu.is_active[index] = true;
                     update_sample(gb, index, 0, 0);
+                    /* We use the highest bit in current_sample_index to mark this sample is not actually playing yet, */
+                    gb->apu.square_channels[index].current_sample_index |= 0x80;
                 }
                 if (gb->apu.square_channels[index].pulse_length == 0) {
                     gb->apu.square_channels[index].pulse_length = 0x40;
@@ -778,6 +816,11 @@ void GB_apu_write(GB_gameboy_t *gb, uint8_t reg, uint8_t value)
                     gb->apu.wave_channel.length_enabled = false;
                 }
                 /* Note that we don't change the sample just yet! This was verified on hardware. */
+                /* Todo: The first sample might *not* beskipped on the DMG, this could be a bug
+                   introduced on the CGB. It appears that the bug was fixed on the AGB, but it's
+                   not reflected by PCM34. This should be probably verified as this could just
+                   mean differences in the DACs. */
+                /* Todo: Similar issues may apply to the other channels on the DMG/AGB, test, verify and fix if needed */
             }
             
             /* APU glitch - if length is enabled while the DIV-divider's LSB is 1, tick the length once. */
@@ -817,8 +860,8 @@ void GB_apu_write(GB_gameboy_t *gb, uint8_t reg, uint8_t value)
                 gb->apu.noise_channel.volume_countdown = 0;
             }
             if ((value & 0xF8) == 0) {
-                /* According to Blargg's test ROM this should disable the channel instantly
-                 TODO: verify how "instant" the change is using PCM12 */
+                /* This disables the DAC */
+                gb->io_registers[reg] = value;
                 gb->apu.is_active[GB_NOISE] = false;
                 update_sample(gb, GB_NOISE, 0, 0);
             }
@@ -916,11 +959,6 @@ void GB_apu_write(GB_gameboy_t *gb, uint8_t reg, uint8_t value)
             }
     }
     gb->io_registers[reg] = value;
-    for (unsigned i = 0; i < GB_N_CHANNELS; i++) {
-        if (gb->apu.is_active[i]) {
-            gb->apu_output.dac_discharge[i] = 1.0;
-        }
-    }
 }
 
 size_t GB_apu_get_current_buffer_length(GB_gameboy_t *gb)
@@ -940,9 +978,17 @@ void GB_set_sample_rate(GB_gameboy_t *gb, unsigned int sample_rate)
     if (sample_rate) {
         gb->apu_output.highpass_rate = pow(0.999958,  GB_get_clock_rate(gb) / (double)sample_rate);
     }
+    GB_apu_update_cycles_per_sample(gb);
 }
 
 void GB_set_highpass_filter_mode(GB_gameboy_t *gb, GB_highpass_mode_t mode)
 {
     gb->apu_output.highpass_mode = mode;
+}
+
+void GB_apu_update_cycles_per_sample(GB_gameboy_t *gb)
+{
+    if (gb->apu_output.sample_rate) {
+        gb->apu_output.cycles_per_sample = 2 * GB_get_clock_rate(gb) / (double)gb->apu_output.sample_rate; /* 2 * because we use 8MHz units */
+    }
 }

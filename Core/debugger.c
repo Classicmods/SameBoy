@@ -226,7 +226,6 @@ static value_t read_lvalue(GB_gameboy_t *gb, lvalue_t lvalue)
             return VALUE_16(GB_read_memory(gb, lvalue.memory_address.value) |
                             (GB_read_memory(gb, lvalue.memory_address.value + 1) * 0x100));
 
-
         case LVALUE_REG16:
             return VALUE_16(*lvalue.register_address);
 
@@ -236,6 +235,8 @@ static value_t read_lvalue(GB_gameboy_t *gb, lvalue_t lvalue)
         case LVALUE_REG_H:
             return VALUE_16(*lvalue.register_address >> 8);
     }
+
+    return VALUE_16(0);
 }
 
 static void write_lvalue(GB_gameboy_t *gb, lvalue_t lvalue, uint16_t value)
@@ -1523,7 +1524,7 @@ static bool lcd(GB_gameboy_t *gb, char *arguments, char *modifiers, const debugg
     else if (gb->display_state == 7 || gb->display_state == 8) {
         GB_log(gb, "Reading OAM data (%d/40)\n", gb->display_state == 8? gb->oam_search_index : 0);
     }
-    else if (gb->display_state <= 3 || gb->display_state == 24) {
+    else if (gb->display_state <= 3 || gb->display_state == 24 || gb->display_state == 31) {
         GB_log(gb, "Glitched line 0 (%d cycles to next event)\n", -gb->display_cycles / 2);
     }
     else if (gb->mode_for_interrupt == 3) {

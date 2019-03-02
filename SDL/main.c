@@ -426,7 +426,7 @@ restart:
     bool error = false;
     start_capturing_logs();
     const char * const boot_roms[] = {"dmg_boot.bin", "cgb_boot.bin", "agb_boot.bin"};
-    error = GB_load_boot_rom(&gb, executable_relative_path(boot_roms[configuration.model]));
+    error = GB_load_boot_rom(&gb, resource_path(boot_roms[configuration.model]));
     end_capturing_logs(true, error);
     
     start_capturing_logs();
@@ -442,7 +442,7 @@ restart:
     GB_load_battery(&gb, battery_save_path);
     
     /* Configure symbols */
-    GB_debugger_load_symbol_file(&gb, executable_relative_path("registers.sym"));
+    GB_debugger_load_symbol_file(&gb, resource_path("registers.sym"));
     
     char symbols_path[path_length + 5];
     replace_extension(filename, path_length, symbols_path, ".sym");
@@ -488,14 +488,28 @@ static void save_configuration(void)
     }
 }
 
+static bool get_arg_flag(const char *flag, int *argc, char **argv)
+{
+    for (unsigned i = 1; i < *argc; i++) {
+        if (strcmp(argv[i], flag) == 0) {
+            (*argc)--;
+            argv[i] = argv[*argc];
+            return true;
+        }
+    }
+    return false;
+}
+
 int main(int argc, char **argv)
 {
 #define str(x) #x
 #define xstr(x) str(x)
     fprintf(stderr, "SameBoy v" xstr(VERSION) "\n");
+    
+    bool fullscreen = get_arg_flag("--fullscreen", &argc, argv);
 
     if (argc > 2) {
-        fprintf(stderr, "Usage: %s [rom]\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--fullscreen] [rom]\n", argv[0]);
         exit(1);
     }
     
@@ -514,6 +528,10 @@ int main(int argc, char **argv)
     window = SDL_CreateWindow("SameBoy v" xstr(VERSION), SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
                               160 * 2, 144 * 2, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     SDL_SetWindowMinimumSize(window, 160, 144);
+    
+    if (fullscreen) {
+        SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+    }
     
     SDL_GLContext gl_context = SDL_GL_CreateContext(window);
     
@@ -541,25 +559,31 @@ int main(int argc, char **argv)
     want_aspec.freq = AUDIO_FREQUENCY;
     want_aspec.format = AUDIO_S16SYS;
     want_aspec.channels = 2;
-#if SDL_COMPILEDVERSION >= 2005 && defined(__APPLE__)
-    /* SDL 2.0.5 on macOS introduced a bug where certain combinations of buffer lengths and frequencies 
-       fail to produce audio correctly. */
-    want_aspec.samples = 2048;
-#else
     want_aspec.samples = 512;
+    
+    SDL_version _sdl_version;
+    SDL_GetVersion(&_sdl_version);
+    unsigned sdl_version = _sdl_version.major * 1000 + _sdl_version.minor * 100 + _sdl_version.patch;
+    
+#ifndef _WIN32
+    /* SDL 2.0.5 on macOS and Linux introduced a bug where certain combinations of buffer lengths and frequencies
+       fail to produce audio correctly. */
+    if (sdl_version >= 2005) {
+        want_aspec.samples = 2048;
+    }
+#else
+    if (sdl_version >= 2006) {
+        /* SDL 2.0.6 offers WASAPI support which allows for much lower audio buffer lengths which at least
+         theoretically reduces lagging. */
+        want_aspec.samples = 32;
+    }
+    else {
+        /* Since WASAPI audio was introduced in SDL 2.0.6, we have to lower the audio frequency
+         to 44100 because otherwise we would get garbled audio output.*/
+        want_aspec.freq = 44100;
+    }
 #endif
-
-#if SDL_COMPILEDVERSION >= 2006 && defined(_WIN32)
-    /* SDL 2.0.6 offers WASAPI support which allows for much lower audio buffer lengths which at least
-       theoretically reduces lagging. */
-    want_aspec.samples = 32;
-#endif
-
-#if SDL_COMPILEDVERSION <= 2005 && defined(_WIN32)
-    /* Since WASAPI audio was introduced in SDL 2.0.6, we have to lower the audio frequency
-       to 44100 because otherwise we would get garbled audio output.*/
-    want_aspec.freq = 44100;
-#endif
+    
 
     want_aspec.callback = audio_callback;
     want_aspec.userdata = &gb;
@@ -591,6 +615,9 @@ int main(int argc, char **argv)
     
     if (filename == NULL) {
         run_gui(false);
+    }
+    else {
+        connect_joypad();
     }
     SDL_PauseAudioDevice(device_id, 0);
     run(); // Never returns

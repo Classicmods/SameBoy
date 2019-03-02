@@ -17,8 +17,9 @@
 #include "printer.h"
 #include "timing.h"
 #include "rewind.h"
-#include "z80_cpu.h"
+#include "sm83_cpu.h"
 #include "symbol_hash.h"
+#include "sgb.h"
 
 #define GB_STRUCT_VERSION 13
 
@@ -27,17 +28,39 @@
 #define GB_MODEL_DMG_FAMILY 0x000
 #define GB_MODEL_MGB_FAMILY 0x100
 #define GB_MODEL_CGB_FAMILY 0x200
+#define GB_MODEL_PAL_BIT 0x1000
 #endif
 
-typedef enum {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define GB_BIG_ENDIAN
+#elif __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#define GB_LITTLE_ENDIAN
+#else
+#error Unable to detect endianess
+#endif
 
+typedef union {
+    struct {
+        uint8_t seconds;
+        uint8_t minutes;
+        uint8_t hours;
+        uint8_t days;
+        uint8_t high;
+    };
+    uint8_t data[5];
+} GB_rtc_time_t;
+
+
+typedef enum {
     // GB_MODEL_DMG_0 = 0x000,
     // GB_MODEL_DMG_A = 0x001,
     GB_MODEL_DMG_B = 0x002,
     // GB_MODEL_DMG_C = 0x003,
-    // GB_MODEL_SGB = 0x004,
+    GB_MODEL_SGB = 0x004,
+    GB_MODEL_SGB_NTSC = GB_MODEL_SGB,
+    GB_MODEL_SGB_PAL = 0x1004,
     // GB_MODEL_MGB = 0x100,
-    // GB_MODEL_SGB2 = 0x101,
+    GB_MODEL_SGB2 = 0x101,
     // GB_MODEL_CGB_0 = 0x200,
     // GB_MODEL_CGB_A = 0x201,
     // GB_MODEL_CGB_B = 0x202,
@@ -184,6 +207,8 @@ typedef enum {
 #ifdef GB_INTERNAL
 #define LCDC_PERIOD 70224
 #define CPU_FREQUENCY 0x400000
+#define SGB_NTSC_FREQUENCY (21477272 / 5)
+#define SGB_PAL_FREQUENCY (21281370 / 5)
 #define DIV_CYCLES (0x100)
 #define INTERNAL_DIV_CYCLES (0x40000)
 
@@ -265,18 +290,16 @@ struct GB_gameboy_internal_s {
                             sp;
                };
                struct {
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#ifdef GB_BIG_ENDIAN
                    uint8_t a, f,
                            b, c,
                            d, e,
                            h, l;
-#elif __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#else
                    uint8_t f, a,
                            c, b,
                            e, d,
                            l, h;
-#else
-#error Unable to detect endianess
 #endif
                };
                
@@ -380,6 +403,7 @@ struct GB_gameboy_internal_s {
         uint8_t tima_reload_state; /* After TIMA overflows, it becomes 0 for 4 cycles before actually reloading. */
         uint16_t serial_cycles;
         uint16_t serial_length;
+        uint8_t double_speed_alignment;
     );
 
     /* APU */
@@ -389,17 +413,8 @@ struct GB_gameboy_internal_s {
 
     /* RTC */
     GB_SECTION(rtc,
-        union {
-            struct {
-                uint8_t seconds;
-                uint8_t minutes;
-                uint8_t hours;
-                uint8_t days;
-                uint8_t high;
-            };
-            uint8_t data[5];
-        } rtc_real, rtc_latched;
-        time_t last_rtc_second;
+        GB_rtc_time_t rtc_real, rtc_latched;
+        uint64_t last_rtc_second;
         bool rtc_latch;
     );
 
@@ -450,6 +465,7 @@ struct GB_gameboy_internal_s {
         uint8_t extra_penalty_for_sprite_at_0;
         uint8_t mode_for_interrupt;
         bool lyc_interrupt_line;
+        bool cgb_palettes_blocked;
     );
 
     /* Unsaved data. This includes all pointers, as well as everything that shouldn't be on a save state */
@@ -476,7 +492,7 @@ struct GB_gameboy_internal_s {
         uint32_t background_palettes_rgb[0x20];
         uint32_t sprite_palettes_rgb[0x20];
         GB_color_correction_mode_t color_correction_mode;
-        bool keys[GB_KEY_MAX];
+        bool keys[4][GB_KEY_MAX];
                
         /* Timing */
         uint64_t last_sync;
@@ -547,6 +563,13 @@ struct GB_gameboy_internal_s {
             unsigned pos;
         } *rewind_sequences; // lasts about 4 seconds
         size_t rewind_pos;
+               
+        /* SGB - saved and allocated optionally */
+        GB_sgb_t *sgb;
+        
+        double sgb_intro_jingle_phases[7];
+        double sgb_intro_sweep_phase;
+        double sgb_intro_sweep_previous_sample;
 
         /* Misc */
         bool turbo;
@@ -576,6 +599,7 @@ __attribute__((__format__ (__printf__, fmtarg, firstvararg)))
 void GB_init(GB_gameboy_t *gb, GB_model_t model);
 bool GB_is_inited(GB_gameboy_t *gb);
 bool GB_is_cgb(GB_gameboy_t *gb);
+bool GB_is_sgb(GB_gameboy_t *gb);
 GB_model_t GB_get_model(GB_gameboy_t *gb);
 void GB_free(GB_gameboy_t *gb);
 void GB_reset(GB_gameboy_t *gb);
@@ -649,5 +673,10 @@ void GB_disconnect_serial(GB_gameboy_t *gb);
 uint32_t GB_get_clock_rate(GB_gameboy_t *gb);
 #endif
 void GB_set_clock_multiplier(GB_gameboy_t *gb, double multiplier);
-    
+
+size_t GB_get_screen_width(GB_gameboy_t *gb);
+size_t GB_get_screen_height(GB_gameboy_t *gb);
+
+unsigned GB_get_player_count(GB_gameboy_t *gb);
+
 #endif /* GB_h */
